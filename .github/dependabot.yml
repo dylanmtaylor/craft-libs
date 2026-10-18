@@ -2,7 +2,9 @@ version: 2
 updates:
   # Maintain Rust / Cargo dependencies
   - package-ecosystem: "cargo"
-    directory: "/"
+    directories:
+      - "/"
+      - "/crates/pdf/read-only-contract"
     schedule:
       interval: "daily"
       time: "06:00"
