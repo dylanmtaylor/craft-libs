@@ -274,11 +274,9 @@ mod platform {
     /// on failure or timeout, returns `false` so the window keeps the desktop's frame.
     pub(super) fn wayland_leaves_frame_to_app() -> bool {
         let (send, receive) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("craft-window-decorations".into())
-            .spawn(move || {
-                let _ = send.send(registry_leaves_frame_to_app());
-            });
+        let spawned = std::thread::Builder::new().name("craft-window-decorations".into()).spawn(move || {
+            let _ = send.send(registry_leaves_frame_to_app());
+        });
         if spawned.is_err() {
             return false;
         }
@@ -310,15 +308,7 @@ mod platform {
     struct Registry;
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Registry {
-        fn event(
-            _: &mut Self,
-            _: &wl_registry::WlRegistry,
-            _: wl_registry::Event,
-            _: &GlobalListContents,
-            _: &Connection,
-            _: &QueueHandle<Self>,
-        ) {
-        }
+        fn event(_: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
     }
 }
 
