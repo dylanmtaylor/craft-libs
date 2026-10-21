@@ -22,13 +22,14 @@ pub struct Day {
 }
 
 impl Day {
-    /// Days since 1970-01-01 (negative before it).
+    /// Days since 1970-01-01 (negative before it); a date outside chrono's range reads as 0.
     pub fn to_days(self) -> i64 {
         use chrono::Datelike;
         chrono::NaiveDate::from_ymd_opt(self.year, u32::from(self.month), u32::from(self.day))
             .map_or(0, |d| i64::from(d.num_days_from_ce()) - UNIX_EPOCH_DAYS_FROM_CE)
     }
 
+    /// The calendar day at `days` since 1970-01-01; a count outside chrono's range reads as 0000-01-01.
     pub fn from_days(days: i64) -> Day {
         civil_from_days(days)
     }
@@ -60,11 +61,14 @@ impl fmt::Display for Month {
 /// `NaiveDate::num_days_from_ce` of 1970-01-01, so the count can be rebased onto the Unix epoch.
 const UNIX_EPOCH_DAYS_FROM_CE: i64 = 719_163;
 
-/// Days since 1970-01-01 to a calendar day (proleptic Gregorian).
+/// Days since 1970-01-01 to a calendar day (proleptic Gregorian). A count outside the range
+/// chrono can represent (either as a CE day number or a date) reads as 0000-01-01.
 fn civil_from_days(days: i64) -> Day {
     use chrono::Datelike;
-    let from_ce = i32::try_from(days.saturating_add(UNIX_EPOCH_DAYS_FROM_CE)).unwrap_or(0);
-    match chrono::NaiveDate::from_num_days_from_ce_opt(from_ce) {
+    // `ok().and_then(..)` rather than `unwrap_or(0)`: a CE count past `i32` would otherwise pass
+    // a valid day 0 to `NaiveDate` (0000-12-31), not the 0000-01-01 fallback the `None` arm gives.
+    let date = i32::try_from(days.saturating_add(UNIX_EPOCH_DAYS_FROM_CE)).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+    match date {
         Some(d) => Day { year: d.year(), month: u8::try_from(d.month()).unwrap_or(1), day: u8::try_from(d.day()).unwrap_or(1) },
         None => Day { year: 0, month: 1, day: 1 },
     }

@@ -213,6 +213,11 @@ fn days_convert_to_and_from_the_epoch_count_both_ways() {
     assert_eq!(day_of(0, 0).to_days(), 0);
     assert_eq!(day_of(DAY_MS_FOR_TESTS, 0).to_days(), 1);
     assert_eq!(day_of(0, -60).to_days(), -1);
+    // A day count past what chrono can represent reads as the 0000-01-01 fallback, not a stray
+    // valid date: `i64::MAX` days would overflow the CE `i32` (which once became 0000-12-31).
+    let fallback = Day { year: 0, month: 1, day: 1 };
+    assert_eq!(Day::from_days(i64::MAX), fallback);
+    assert_eq!(Day::from_days(i64::MIN), fallback);
 }
 
 const DAY_MS_FOR_TESTS: u64 = 86_400_000;
