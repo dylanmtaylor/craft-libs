@@ -259,7 +259,7 @@ pub fn decorate(builder: egui::ViewportBuilder, frame: &Frame) -> egui::Viewport
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
 mod platform {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -269,16 +269,22 @@ mod platform {
 
     /// Whether this is a Wayland session whose compositor offers no server-side decorations
     /// (`zxdg_decoration_manager_v1`), so the frame is left to the app (GNOME). `false` on X11
-    /// (no Wayland connection), and on any compositor that offers them (KDE, Sway, Hyprland,
-    /// COSMIC). The probe cannot block startup: it runs on its own thread with a short timeout and,
-    /// on failure or timeout, returns `false` so the window keeps the desktop's frame.
+    /// (no Wayland connection) and on any compositor that offers them (KDE, Sway, Hyprland,
+    /// COSMIC).
+    ///
+    /// Called once at startup, before the window is created. It runs the registry read on a
+    /// worker thread with a 500 ms deadline so a stalled compositor can't block startup; on
+    /// failure or timeout it returns `false` and the window keeps the desktop's frame. (A
+    /// compositor that never answers would leave that one worker parked for the process's life;
+    /// acceptable because this is a single, one-shot call, not a repeated one.)
     pub(super) fn wayland_leaves_frame_to_app() -> bool {
         bounded(registry_leaves_frame_to_app).flatten().unwrap_or(false)
     }
 
-    /// Run `f` on a short-lived worker thread with a 500 ms timeout, so a stalled compositor or
-    /// subprocess can never block window startup. `None` when the thread can't be spawned or `f`
-    /// doesn't finish in time; otherwise `f`'s return value.
+    /// Run `f` on a short-lived worker thread with a 500 ms deadline, so a stalled dependency can't
+    /// block window startup. `None` when the thread can't be spawned or `f` doesn't finish in time;
+    /// otherwise `f`'s return value. For a child process, prefer [`gsettings_button_layout`], which
+    /// also kills and reaps the child on timeout; this helper only bounds the caller's wait.
     fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
         let (send, receive) = mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new().name("craft-window-probe".into()).spawn(move || {
@@ -295,7 +301,11 @@ mod platform {
     fn registry_leaves_frame_to_app() -> Option<bool> {
         // `connect_to_env` would take ownership of an inherited `WAYLAND_SOCKET` fd and unset the
         // variable; dropping this short-lived connection would then close the descriptor winit
-        // needs. Leave the socket alone and keep the desktop frame (winit will decorate it).
+        // needs. So when the compositor handed us an open socket (rare: normal launches get
+        // `WAYLAND_DISPLAY`, a name we could reopen, not `WAYLAND_SOCKET`), skip the probe and keep
+        // the desktop frame. On GNOME this means winit's fallback frame rather than an app-drawn
+        // one, the same as an app that doesn't probe at all \u2014 a safe default, not a regression,
+        // taken only to protect winit's connection.
         if std::env::var_os("WAYLAND_SOCKET").is_some() {
             return None;
         }
@@ -306,19 +316,36 @@ mod platform {
     }
 
     /// GNOME's `button-layout`, read with `gsettings`. `None` when `gsettings` is missing, fails,
-    /// times out, or prints nothing usable. The subprocess runs behind the same 500 ms worker as
-    /// the Wayland probe, so a stalled `gsettings` can't block startup either.
+    /// times out, or prints nothing usable. The child is spawned with piped output and read on a
+    /// worker thread; if it doesn't finish within 500 ms the child is killed and reaped, so a
+    /// stalled `gsettings` leaves neither a blocked process nor a parked worker.
     pub(super) fn gsettings_button_layout() -> Option<String> {
-        bounded(run_gsettings).flatten()
-    }
-
-    /// The raw `gsettings` call, run on the bounded worker thread.
-    fn run_gsettings() -> Option<String> {
-        let output = Command::new("gsettings").args(["get", "org.gnome.desktop.wm.preferences", "button-layout"]).output().ok()?;
-        if !output.status.success() {
+        let mut child = Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdout = child.stdout.take()?;
+        let (send, receive) = mpsc::sync_channel(1);
+        let reader = std::thread::Builder::new().name("craft-window-gsettings".into()).spawn(move || {
+            let mut stdout = stdout;
+            let mut buf = String::new();
+            let read = std::io::Read::read_to_string(&mut stdout, &mut buf);
+            let _ = send.send(read.ok().map(|_| buf));
+        });
+        if reader.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
             return None;
         }
-        let value = String::from_utf8(output.stdout).ok()?;
+        let output = receive.recv_timeout(Duration::from_millis(500));
+        // Kill-and-reap whether it finished or timed out: a finished child still needs reaping, and
+        // a timed-out one must not linger. `kill` on an exited child is a harmless error.
+        let _ = child.kill();
+        let _ = child.wait();
+        let value = output.ok().flatten()?;
         let value = value.trim();
         if value.is_empty() { None } else { Some(value.to_string()) }
     }
