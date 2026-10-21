@@ -218,6 +218,17 @@ fn days_convert_to_and_from_the_epoch_count_both_ways() {
     let fallback = Day { year: 0, month: 1, day: 1 };
     assert_eq!(Day::from_days(i64::MAX), fallback);
     assert_eq!(Day::from_days(i64::MIN), fallback);
+    // Valid `i32` years past chrono's ±262143 still convert, both ways, as before chrono.
+    for (day, days) in [
+        (Day { year: 262_144, month: 1, day: 1 }, 95_026_602),
+        (Day { year: -262_145, month: 3, day: 1 }, -96465964),
+        (Day { year: i32::MAX, month: 12, day: 31 }, 784351576776),
+        (Day { year: i32::MIN, month: 1, day: 1 }, -784353015833),
+    ] {
+        assert_eq!(day.to_days(), days, "{day}");
+        assert_eq!(Day::from_days(days), day, "{days}");
+    }
+    assert_eq!(Day { year: 2025, month: 2, day: 30 }.to_days(), 0, "a day that doesn't exist");
 }
 
 const DAY_MS_FOR_TESTS: u64 = 86_400_000;
