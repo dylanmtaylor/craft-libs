@@ -24,13 +24,9 @@ pub struct Day {
 impl Day {
     /// Days since 1970-01-01 (negative before it).
     pub fn to_days(self) -> i64 {
-        let (y, m, d) = (i64::from(self.year), i64::from(self.month), i64::from(self.day));
-        let y = if m <= 2 { y - 1 } else { y };
-        let era = y.div_euclid(400);
-        let yoe = y.rem_euclid(400);
-        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe - 719_468
+        use chrono::Datelike;
+        chrono::NaiveDate::from_ymd_opt(self.year, u32::from(self.month), u32::from(self.day))
+            .map_or(0, |d| i64::from(d.num_days_from_ce()) - UNIX_EPOCH_DAYS_FROM_CE)
     }
 
     pub fn from_days(days: i64) -> Day {
@@ -61,18 +57,17 @@ impl fmt::Display for Month {
     }
 }
 
+/// `NaiveDate::num_days_from_ce` of 1970-01-01, so the count can be rebased onto the Unix epoch.
+const UNIX_EPOCH_DAYS_FROM_CE: i64 = 719_163;
+
 /// Days since 1970-01-01 to a calendar day (proleptic Gregorian).
 fn civil_from_days(days: i64) -> Day {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    Day { year: i32::try_from(y).unwrap_or(0), month: u8::try_from(m).unwrap_or(1), day: u8::try_from(d).unwrap_or(1) }
+    use chrono::Datelike;
+    let from_ce = i32::try_from(days.saturating_add(UNIX_EPOCH_DAYS_FROM_CE)).unwrap_or(0);
+    match chrono::NaiveDate::from_num_days_from_ce_opt(from_ce) {
+        Some(d) => Day { year: d.year(), month: u8::try_from(d.month()).unwrap_or(1), day: u8::try_from(d.day()).unwrap_or(1) },
+        None => Day { year: 0, month: 1, day: 1 },
+    }
 }
 
 /// The calendar day of a Unix-millisecond time, at a fixed offset from UTC in minutes (east is
