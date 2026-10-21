@@ -60,6 +60,11 @@ The `egui` feature adds [`decorate`]. Without it, the crate is pure decision log
 ## Notes
 
 - The Wayland probe opens a short-lived connection and reads the global registry once, on its own
-  thread with a 500 ms timeout; it never touches the connection winit inherits, and on failure or
-  timeout it keeps the desktop's frame. Call it once at startup.
+  thread with a 500 ms timeout; on failure or timeout it keeps the desktop's frame. Call it once at
+  startup.
+- It never touches the connection winit inherits: when `WAYLAND_SOCKET` is set (a compositor handed
+  the app an open descriptor), the probe skips connecting and keeps the desktop frame, so it can't
+  consume the socket winit needs.
+- The GNOME `button-layout` lookup (`gsettings`) runs behind the same bounded worker, so a stalled
+  `gsettings` can't block startup either.
 - `#![forbid(unsafe_code)]`, and the never-crash lints the workspace requires.

@@ -273,28 +273,47 @@ mod platform {
     /// COSMIC). The probe cannot block startup: it runs on its own thread with a short timeout and,
     /// on failure or timeout, returns `false` so the window keeps the desktop's frame.
     pub(super) fn wayland_leaves_frame_to_app() -> bool {
+        bounded(registry_leaves_frame_to_app).flatten().unwrap_or(false)
+    }
+
+    /// Run `f` on a short-lived worker thread with a 500 ms timeout, so a stalled compositor or
+    /// subprocess can never block window startup. `None` when the thread can't be spawned or `f`
+    /// doesn't finish in time; otherwise `f`'s return value.
+    fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
         let (send, receive) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new().name("craft-window-decorations".into()).spawn(move || {
-            let _ = send.send(registry_leaves_frame_to_app());
+        let spawned = std::thread::Builder::new().name("craft-window-probe".into()).spawn(move || {
+            let _ = send.send(f());
         });
         if spawned.is_err() {
-            return false;
+            return None;
         }
-        receive.recv_timeout(Duration::from_millis(500)).ok().flatten().unwrap_or(false)
+        receive.recv_timeout(Duration::from_millis(500)).ok()
     }
 
     /// A fresh connection (never winit's inherited one): `None` when there is no Wayland
     /// compositor, else whether it offers no decoration manager.
     fn registry_leaves_frame_to_app() -> Option<bool> {
+        // `connect_to_env` would take ownership of an inherited `WAYLAND_SOCKET` fd and unset the
+        // variable; dropping this short-lived connection would then close the descriptor winit
+        // needs. Leave the socket alone and keep the desktop frame (winit will decorate it).
+        if std::env::var_os("WAYLAND_SOCKET").is_some() {
+            return None;
+        }
         let conn = Connection::connect_to_env().ok()?;
         let (globals, _queue) = registry_queue_init::<Registry>(&conn).ok()?;
         let offered = globals.contents().with_list(|list| list.iter().any(|g| g.interface == "zxdg_decoration_manager_v1"));
         Some(!offered)
     }
 
-    /// GNOME's `button-layout`, read with `gsettings`. `None` when `gsettings` is missing, fails, or
-    /// prints nothing usable.
+    /// GNOME's `button-layout`, read with `gsettings`. `None` when `gsettings` is missing, fails,
+    /// times out, or prints nothing usable. The subprocess runs behind the same 500 ms worker as
+    /// the Wayland probe, so a stalled `gsettings` can't block startup either.
     pub(super) fn gsettings_button_layout() -> Option<String> {
+        bounded(run_gsettings).flatten()
+    }
+
+    /// The raw `gsettings` call, run on the bounded worker thread.
+    fn run_gsettings() -> Option<String> {
         let output = Command::new("gsettings").args(["get", "org.gnome.desktop.wm.preferences", "button-layout"]).output().ok()?;
         if !output.status.success() {
             return None;
