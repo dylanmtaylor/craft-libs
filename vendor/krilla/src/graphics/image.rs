@@ -522,6 +522,13 @@ fn png_metadata(data: &[u8]) -> Result<ImageMetadata, String> {
     let reader = decoder
         .read_info()
         .map_err(|e| e.to_string().to_ascii_lowercase())?;
+    // Craft patch: refused here too, so `Image::from_png` fails instead of the deferred decode.
+    if reader
+        .output_buffer_size()
+        .is_none_or(|n| n > MAX_DECODED_PNG_BYTES)
+    {
+        return Err("image is too large".to_string());
+    }
     let info = reader.info();
 
     let size = (info.width, info.height);
@@ -555,6 +562,11 @@ fn png_metadata(data: &[u8]) -> Result<ImageMetadata, String> {
     })
 }
 
+/// Craft patch: most bytes a PNG may decode to (16384 x 16384 RGBA8). The header alone sets the
+/// output size, so it is checked before any pixel data, and reserved fallibly, so that a bad
+/// image is an error instead of an allocation failure that ends the process.
+const MAX_DECODED_PNG_BYTES: usize = 1 << 30;
+
 fn decode_png(data: &[u8]) -> Result<Repr, String> {
     let cursor = Cursor::new(data);
     let mut decoder = png::Decoder::new(cursor);
@@ -562,7 +574,15 @@ fn decode_png(data: &[u8]) -> Result<Repr, String> {
     let mut reader = decoder
         .read_info()
         .map_err(|e| e.to_string().to_ascii_lowercase())?;
-    let mut img_data = vec![0; reader.output_buffer_size().ok_or("image is too large")?];
+    let size = reader
+        .output_buffer_size()
+        .filter(|&n| n <= MAX_DECODED_PNG_BYTES)
+        .ok_or("image is too large")?;
+    let mut img_data = Vec::new();
+    img_data
+        .try_reserve_exact(size)
+        .map_err(|_| "image is too large".to_string())?;
+    img_data.resize(size, 0);
     let _ = reader
         .next_frame(&mut img_data)
         .map_err(|e| e.to_string())?;
@@ -825,6 +845,45 @@ mod tests {
     fn invalid_png_image() {
         let e = Image::from_png(Arc::new(b"dfngiudfg".to_vec()).into(), false);
         assert!(e.is_err());
+    }
+
+    /// A PNG whose header alone claims `width` x `height` RGBA16, with an empty IDAT.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        fn crc(bytes: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in bytes {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                }
+            }
+            !c
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let start = out.len();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let sum = crc(&out[start..]);
+            out.extend_from_slice(&sum.to_be_bytes());
+        }
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[16, 6, 0, 0, 0]);
+        chunk(&mut out, b"IHDR", &ihdr);
+        chunk(&mut out, b"IDAT", &[0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    #[test]
+    fn a_png_header_claiming_a_huge_image_is_refused_before_allocating() {
+        // 65535 x 65535 RGBA16 would be 34 GB of output.
+        let huge = png_header(65_535, 65_535);
+        assert!(Image::from_png(Arc::new(huge.clone()).into(), false).is_err());
+        assert!(super::decode_png(&huge).is_err());
     }
 
     #[test]

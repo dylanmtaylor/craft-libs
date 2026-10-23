@@ -26,3 +26,8 @@ The shared writer's native subprocess regression covers the previously aborting
 cleanup and a successful fresh export afterward. Native and WASM export tests
 cover the unchanged successful path. WASM aborts, aborting panic configurations
 and process-wide allocation failures remain outside unwind recovery.
+
+A PNG whose header implies more than 1 GiB of decoded output is refused by
+`Image::from_png` and by the deferred decoder, and the decoded buffer is reserved
+fallibly, so a small file (or a bitmap glyph in a font) cannot request an allocation that
+ends the process.
