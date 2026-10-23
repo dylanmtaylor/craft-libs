@@ -330,7 +330,7 @@ impl Image {
         Self(Arc::new(ImageRepr {
             inner: Deferred::new(move || {
                 let (color_channel, alpha_channel, bits_per_component) =
-                    handle_u8_image(&data, ColorSpace::RGBA);
+                    handle_u8_image(&data, ColorSpace::RGBA)?;
 
                 Ok(Repr::Sampled(SampledRepr {
                     color_channel,
@@ -597,8 +597,8 @@ fn decode_png(data: &[u8]) -> Result<Repr, String> {
     };
 
     let (color_channel, alpha_channel, bits_per_component) = match bit_depth {
-        BitDepth::Eight => handle_u8_image(&img_data, color_space),
-        BitDepth::Sixteen => handle_u16_image(&img_data, color_space),
+        BitDepth::Eight => handle_u8_image(&img_data, color_space)?,
+        BitDepth::Sixteen => handle_u16_image(&img_data, color_space)?,
         _ => return Err("image has an unsupported bit-depth".to_string()),
     };
 
@@ -683,7 +683,7 @@ fn decode_gif(data: Data) -> Result<Repr, String> {
         .ok_or("GIF image seems to be empty".to_string())?;
 
     let (color_channel, alpha_channel, bits_per_component) =
-        handle_u8_image(first_frame.buffer.as_ref(), ColorSpace::RGBA);
+        handle_u8_image(first_frame.buffer.as_ref(), ColorSpace::RGBA)?;
 
     Ok(Repr::Sampled(SampledRepr {
         color_channel,
@@ -739,7 +739,7 @@ fn decode_webp(data: Data) -> Result<Repr, String> {
     };
 
     let (color_channel, alpha_channel, bits_per_component) =
-        handle_u8_image(&first_frame, color_space);
+        handle_u8_image(&first_frame, color_space)?;
 
     Ok(Repr::Sampled(SampledRepr {
         color_channel,
@@ -748,9 +748,21 @@ fn decode_webp(data: Data) -> Result<Repr, String> {
     }))
 }
 
-fn handle_u8_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, BitsPerComponent) {
+/// Craft patch: an empty vector with room for `capacity` bytes, or an error instead of the
+/// allocation failure that would end the process. Splitting a decoded image into colour and alpha
+/// briefly needs about twice its size beside the decoded pixels.
+fn try_buffer(capacity: usize) -> Result<Vec<u8>, String> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(capacity)
+        .map_err(|_| "image is too large".to_string())?;
+    Ok(v)
+}
+
+type SplitImage = (Vec<u8>, Option<Vec<u8>>, BitsPerComponent);
+
+fn handle_u8_image(data: &[u8], cs: ColorSpace) -> Result<SplitImage, String> {
     let mut alphas = if cs.has_alpha() {
-        Vec::with_capacity(data.len() / cs.num_components())
+        try_buffer(data.len() / cs.num_components())?
     } else {
         Vec::new()
     };
@@ -758,7 +770,7 @@ fn handle_u8_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, Bi
     let color_channel = match cs {
         ColorSpace::RGB => deflate_encode(data),
         ColorSpace::RGBA => {
-            let mut buf = Vec::with_capacity(data.len() * 3 / 4);
+            let mut buf = try_buffer(data.len() * 3 / 4)?;
             data.chunks_exact(4).for_each(|data| {
                 buf.extend_from_slice(&data[0..3]);
                 alphas.push(data[3]);
@@ -767,7 +779,7 @@ fn handle_u8_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, Bi
         }
         ColorSpace::Luma => deflate_encode(data),
         ColorSpace::LumaA => {
-            let mut buf = Vec::with_capacity(data.len() / 2);
+            let mut buf = try_buffer(data.len() / 2)?;
             data.chunks_exact(2).for_each(|data| {
                 buf.push(data[0]);
                 alphas.push(data[1]);
@@ -784,12 +796,12 @@ fn handle_u8_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, Bi
         None
     };
 
-    (color_channel, alpha_channel, BitsPerComponent::Eight)
+    Ok((color_channel, alpha_channel, BitsPerComponent::Eight))
 }
 
-fn handle_u16_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, BitsPerComponent) {
+fn handle_u16_image(data: &[u8], cs: ColorSpace) -> Result<SplitImage, String> {
     let mut alphas = if cs.has_alpha() {
-        Vec::with_capacity(data.len() / cs.num_components())
+        try_buffer(data.len() / cs.num_components())?
     } else {
         Vec::new()
     };
@@ -797,7 +809,7 @@ fn handle_u16_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, B
     let encoded_image = match cs {
         ColorSpace::RGB => deflate_encode(data),
         ColorSpace::RGBA => {
-            let mut buf = Vec::with_capacity(data.len() * 3 / 4);
+            let mut buf = try_buffer(data.len() * 3 / 4)?;
             data.chunks_exact(8).for_each(|data| {
                 buf.extend_from_slice(&data[0..6]);
                 alphas.extend_from_slice(&data[6..]);
@@ -806,7 +818,7 @@ fn handle_u16_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, B
         }
         ColorSpace::Luma => deflate_encode(data),
         ColorSpace::LumaA => {
-            let mut buf = Vec::with_capacity(data.len() / 2);
+            let mut buf = try_buffer(data.len() / 2)?;
             data.chunks_exact(4).for_each(|data| {
                 buf.extend_from_slice(&data[0..2]);
                 alphas.extend_from_slice(&data[2..]);
@@ -823,7 +835,7 @@ fn handle_u16_image(data: &[u8], cs: ColorSpace) -> (Vec<u8>, Option<Vec<u8>>, B
         None
     };
 
-    (encoded_image, encoded_mask, BitsPerComponent::Sixteen)
+    Ok((encoded_image, encoded_mask, BitsPerComponent::Sixteen))
 }
 
 fn get_icc_profile_type(data: &[u8], color_space: ImageColorspace) -> Option<GenericICCProfile> {
@@ -884,6 +896,15 @@ mod tests {
         let huge = png_header(65_535, 65_535);
         assert!(Image::from_png(Arc::new(huge.clone()).into(), false).is_err());
         assert!(super::decode_png(&huge).is_err());
+    }
+
+    #[test]
+    fn rgba_split_buffers_are_reserved_fallibly() {
+        assert!(super::try_buffer(usize::MAX).is_err());
+        let (color, alpha, _) = super::handle_u8_image(&[1, 2, 3, 128, 4, 5, 6, 255], super::ColorSpace::RGBA).unwrap();
+        assert!(!color.is_empty() && alpha.is_some());
+        let (_, alpha, _) = super::handle_u16_image(&[0; 16], super::ColorSpace::RGBA).unwrap();
+        assert!(alpha.is_some());
     }
 
     #[test]
