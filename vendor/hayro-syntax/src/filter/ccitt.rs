@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn columns_past_u32_max_are_refused_not_wrapped() {
         let params = ImageDecodeParams { width: 8, height: 4, ..Default::default() };
-        let decoded = |dict: &[u8]| decode(&ALL_BLACK_8X4, &Dict::from_bytes(dict).unwrap(), &params);
+        let decoded = |dict: &[u8]| decode(&ALL_BLACK_8X4, &Dict::from_bytes(dict).unwrap(), &params, 1 << 20);
         assert!(decoded(b"<< /K -1 /Columns 8 >>").is_some());
         // 2^32 + 8 would wrap to 8 columns.
         assert!(decoded(b"<< /K -1 /Columns 4294967304 >>").is_none());
