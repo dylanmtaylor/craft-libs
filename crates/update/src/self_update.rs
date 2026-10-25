@@ -49,6 +49,8 @@ pub enum Install {
     Package(PackageKind, PathBuf),
     /// A Flatpak application.
     Flatpak,
+    /// A standalone executable or unpacked tree.
+    Standalone(PathBuf),
 }
 
 impl Install {
@@ -60,6 +62,16 @@ impl Install {
             Self::AppImage(_) => PackageKind::AppImage,
             Self::Package(kind, _) => *kind,
             Self::Flatpak => PackageKind::Flatpak,
+            Self::Standalone(_) => {
+                #[cfg(windows)]
+                {
+                    PackageKind::PortableZip
+                }
+                #[cfg(not(windows))]
+                {
+                    PackageKind::TarGz
+                }
+            }
         }
     }
 }
@@ -109,10 +121,20 @@ pub fn is_self_updating(app: &App) -> bool {
 
 #[cfg(target_os = "macos")]
 fn detect(app: &App, exe: &Path) -> Option<Install> {
-    let bundle = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))?;
-    let plist = plist::Value::from_file(bundle.join("Contents/Info.plist")).ok()?;
-    let id = plist.as_dictionary()?.get("CFBundleIdentifier")?.as_string()?;
-    (id == app.bundle_id()).then(|| Install::MacApp(bundle.to_path_buf()))
+    if let Some(bundle) = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+        && let Ok(plist) = plist::Value::from_file(bundle.join("Contents/Info.plist"))
+        && let Some(id) = plist.as_dictionary().and_then(|d| d.get("CFBundleIdentifier")).and_then(|v| v.as_string())
+        && id == app.bundle_id()
+    {
+        return Some(Install::MacApp(bundle.to_path_buf()));
+    }
+    if exe.components().any(|c| c.as_os_str() == "target") && std::env::var_os("CRAFT_UPDATE_DEV").is_none() {
+        return None;
+    }
+    if exe.is_file() {
+        return Some(Install::Standalone(exe.to_path_buf()));
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -126,7 +148,16 @@ fn detect(app: &App, exe: &Path) -> Option<Install> {
     let canonical = |p: PathBuf| p.canonicalize().unwrap_or(p);
     let recorded = msi_install_dir(app).map(canonical);
     let default = dirs::data_local_dir().map(|d| canonical(d.join("Programs").join(app.name)));
-    [recorded, default].into_iter().flatten().any(|d| d == dir).then(|| Install::Msi(exe.to_path_buf()))
+    if [recorded, default].into_iter().flatten().any(|d| d == dir) {
+        return Some(Install::Msi(exe.to_path_buf()));
+    }
+    if exe.components().any(|c| c.as_os_str() == "target") && std::env::var_os("CRAFT_UPDATE_DEV").is_none() {
+        return None;
+    }
+    if exe.is_file() {
+        return Some(Install::Standalone(exe.to_path_buf()));
+    }
+    None
 }
 
 /// The folder the MSI installed into, as it records it.
@@ -153,9 +184,6 @@ fn detect(app: &App, exe: &Path) -> Option<Install> {
     if let Some(appimage) = std::env::var_os("APPIMAGE") {
         return Some(Install::AppImage(PathBuf::from(appimage)));
     }
-    if exe != Path::new("/usr/bin").join(app.id) {
-        return None;
-    }
     let t = std::time::Duration::from_secs(10);
     if process::capture("dpkg-query", &["-W", "-f", "${db:Status-Status}", app.id], t).is_some_and(|s| s.trim() == "installed") {
         return Some(Install::Package(PackageKind::Deb, exe.to_path_buf()));
@@ -167,6 +195,12 @@ fn detect(app: &App, exe: &Path) -> Option<Install> {
     // AUR builds (`<id>`, `<id>-bin`, `<id>-git`) are left to pacman and the AUR helper.
     if crate::detect::linux::has_pacman_db() && process::capture("pacman", &["-Q", &app.bundle_id()], t).is_some() {
         return Some(Install::Package(PackageKind::ArchPkg, exe.to_path_buf()));
+    }
+    if exe.components().any(|c| c.as_os_str() == "target") && std::env::var_os("CRAFT_UPDATE_DEV").is_none() {
+        return None;
+    }
+    if exe.is_file() {
+        return Some(Install::Standalone(exe.to_path_buf()));
     }
     None
 }
@@ -288,6 +322,18 @@ pub fn update(
                 exe.parent().ok_or_else(|| format!("{} isn't in a folder", app.name))?;
                 windows_helper(app, paths, pid, exe, &Finish::Portable { zip: file, tmp: paths.cache.join(PORTABLE_STAGING) })
             }
+            #[cfg(windows)]
+            Install::Standalone(exe) => {
+                exe.parent().ok_or_else(|| format!("{} isn't in a folder", app.name))?;
+                windows_helper(app, paths, pid, exe, &Finish::Portable { zip: file, tmp: paths.cache.join(PORTABLE_STAGING) })
+            }
+            #[cfg(unix)]
+            Install::Standalone(exe) => {
+                let result = replace_standalone(app, &file, exe);
+                let _ = std::fs::remove_file(&file);
+                result?;
+                relaunch_after_exit(pid, &[exe.as_os_str()])
+            }
             #[allow(unreachable_patterns)]
             _ => {
                 let _ = (pid, &file);
@@ -327,6 +373,41 @@ fn replace_appimage(new: &Path, path: &Path) -> Result<(), String> {
     std::fs::rename(&staged, path).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
         format!("couldn't replace {} ({e})", path.display())
+    })
+}
+
+/// Extracts the app's binary from a release tarball and atomically renames it over the running
+/// standalone executable.
+#[cfg(unix)]
+fn replace_standalone(app: &App, tarball: &Path, exe: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exe.parent().ok_or_else(|| "executable isn't in a folder".to_string())?;
+    let f = std::fs::File::open(tarball).map_err(|e| format!("could not open {}: {e}", tarball.display()))?;
+    let gz = flate2::read::GzDecoder::new(f);
+    let mut archive = tar::Archive::new(gz);
+    let staged = dir.join(format!(".{}.update", exe.file_name().and_then(|n| n.to_str()).unwrap_or("app")));
+    let bin_suffix = format!("/{}", app.id);
+    let bin_rel = format!("bin/{}", app.id);
+    let mut found = false;
+    for entry in archive.entries().map_err(|e| format!("could not read archive entries: {e}"))? {
+        let mut entry = entry.map_err(|e| format!("archive entry error: {e}"))?;
+        let path = entry.path().map_err(|e| format!("archive path error: {e}"))?;
+        let path_str = path.to_string_lossy();
+        if path_str == bin_rel || path_str.ends_with(&bin_suffix) || path.file_name().is_some_and(|n| n == app.id) {
+            let mut out = std::fs::File::create(&staged).map_err(|e| format!("could not create {}: {e}", staged.display()))?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| format!("could not extract binary: {e}"))?;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("release archive did not contain binary for {}", app.id));
+    }
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    std::fs::rename(&staged, exe).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        format!("could not replace {}: {e}", exe.display())
     })
 }
 
@@ -555,7 +636,7 @@ fn windows_precheck(app: &App, install: &Install, paths: &Paths, download: &Path
         Install::Msi(exe) => {
             signed_like(app, &me, exe).and_then(|()| signed_like(app, &me, download)).and_then(|()| same_cache_as_helper(app, paths, exe))
         }
-        Install::Portable(exe) => signed_like(app, &me, exe).and_then(|()| same_cache_as_helper(app, paths, exe)),
+        Install::Portable(exe) | Install::Standalone(exe) => signed_like(app, &me, exe).and_then(|()| same_cache_as_helper(app, paths, exe)),
         _ => Ok(()),
     }
 }
@@ -610,7 +691,7 @@ fn check_helper(app: &App, me: &Path, paths: &Paths, exe: &Path, step: &Finish) 
     let in_downloads = |file: &Path| canonical(file).map(|f| f.parent() == Some(downloads.as_path()));
     let allowed = match (detect(app, &exe), step) {
         (Some(Install::Msi(installed)), Finish::Msi(msi)) => installed == exe && in_downloads(msi)?,
-        (Some(Install::Portable(installed)), Finish::Portable { zip, tmp }) => {
+        (Some(Install::Portable(installed) | Install::Standalone(installed)), Finish::Portable { zip, tmp }) => {
             installed == exe
                 && in_downloads(zip)?
                 && tmp.file_name().is_some_and(|n| n == PORTABLE_STAGING)
