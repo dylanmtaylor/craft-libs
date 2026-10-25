@@ -391,6 +391,9 @@ fn replace_standalone(app: &App, tarball: &Path, exe: &Path) -> Result<(), Strin
     let mut found = false;
     for entry in archive.entries().map_err(|e| format!("could not read archive entries: {e}"))? {
         let mut entry = entry.map_err(|e| format!("archive entry error: {e}"))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
         let path = entry.path().map_err(|e| format!("archive path error: {e}"))?;
         let path_str = path.to_string_lossy();
         if path_str == bin_rel || path_str.ends_with(&bin_suffix) || path.file_name().is_some_and(|n| n == app.id) {

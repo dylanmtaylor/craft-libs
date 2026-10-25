@@ -45,10 +45,16 @@ impl StartupPrompt {
 
         let mut response = StartupPromptResponse::Pending;
 
-        // Modal dimmed background overlay
+        // Modal dimmed background overlay; it senses clicks so they don't reach widgets underneath.
         let screen_rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("craft_update_backdrop")));
-        painter.rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
+        egui::Area::new(egui::Id::new("craft_update_backdrop")).order(egui::Order::Middle).fixed_pos(screen_rect.min).show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click_and_drag());
+            ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(150));
+        });
+
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            response = StartupPromptResponse::Later;
+        }
 
         let is_dark = ctx.theme() == egui::Theme::Dark;
         let card_bg = if is_dark { Color32::from_rgb(26, 26, 28) } else { Color32::from_rgb(255, 255, 255) };
