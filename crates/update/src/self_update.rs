@@ -740,7 +740,9 @@ mod tests {
         let exe = folder.join("artcraft-launcher.exe");
         let helper = {
             let (exe, step, pid) = (exe.clone(), step.clone(), old.id());
-            std::thread::spawn(move || run_step(&system_program("cmd.exe"), pid, &exe, &step, std::time::Duration::from_secs(30)))
+            std::thread::spawn(move || {
+                run_step(&crate::suite::LAUNCHER, &system_program("cmd.exe"), pid, &exe, &step, std::time::Duration::from_secs(30))
+            })
         };
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "0.1.0", "replaced while the old launcher was still running");
@@ -778,21 +780,21 @@ mod tests {
         let staging = cache.join(PORTABLE_STAGING);
         let portable = |zip: &Path, tmp: &Path| Finish::Portable { zip: zip.to_path_buf(), tmp: tmp.to_path_buf() };
 
-        assert_eq!(check_helper(&me, &paths, &exe, &portable(&zip, &staging)), Ok(()));
+        assert_eq!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &staging)), Ok(()));
         // A helper that isn't in the installation's cache.
-        assert!(check_helper(&other, &paths, &exe, &portable(&zip, &staging)).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &other, &paths, &exe, &portable(&zip, &staging)).is_err());
         // Not the launcher's installation.
-        assert!(check_helper(&me, &paths, &other, &portable(&zip, &staging)).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &other, &portable(&zip, &staging)).is_err());
         // A download from outside the cache.
-        assert!(check_helper(&me, &paths, &exe, &portable(&elsewhere, &staging)).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&elsewhere, &staging)).is_err());
         // Unpacking anywhere but the cache's staging folder.
-        assert!(check_helper(&me, &paths, &exe, &portable(&zip, &dir.path().join(PORTABLE_STAGING))).is_err());
-        assert!(check_helper(&me, &paths, &exe, &portable(&zip, &paths.downloads())).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &dir.path().join(PORTABLE_STAGING))).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &paths.downloads())).is_err());
         // An MSI for a portable installation.
-        assert!(check_helper(&me, &paths, &exe, &Finish::Msi(zip.clone())).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &Finish::Msi(zip.clone())).is_err());
         // No longer a portable installation.
         std::fs::remove_file(folder.join("portable.txt")).unwrap();
-        assert!(check_helper(&me, &paths, &exe, &portable(&zip, &staging)).is_err());
+        assert!(check_helper(&crate::suite::LAUNCHER, &me, &paths, &exe, &portable(&zip, &staging)).is_err());
     }
 
     /// The helper finds a portable launcher's folders beside it, as that launcher does.
@@ -823,10 +825,10 @@ mod tests {
             std::fs::create_dir_all(paths.downloads()).unwrap();
         }
         // Installed with the MSI: the helper calls `Paths::new` again.
-        assert!(same_cache_as_helper(&temporary, &exe).is_err_and(|e| e.contains("can't update itself")));
+        assert!(same_cache_as_helper(&crate::suite::LAUNCHER, &temporary, &exe).is_err_and(|e| e.contains("can't update itself")));
         std::fs::write(folder.join("portable.txt"), "").unwrap();
-        assert_eq!(same_cache_as_helper(&own, &exe), Ok(()));
-        assert!(same_cache_as_helper(&temporary, &exe).is_err());
+        assert_eq!(same_cache_as_helper(&crate::suite::LAUNCHER, &own, &exe), Ok(()));
+        assert!(same_cache_as_helper(&crate::suite::LAUNCHER, &temporary, &exe).is_err());
     }
 
     /// An update whose swap couldn't be scheduled stays on offer, and a scheduled one is not
@@ -877,8 +879,15 @@ mod tests {
         let running = std::process::id();
         let started = std::time::Instant::now();
         // The test process itself never exits within the wait, so the package is never run.
-        let error =
-            run_step(&system_program("cmd.exe"), running, &exe, &Finish::Msi(msi.clone()), std::time::Duration::from_millis(300)).unwrap_err();
+        let error = run_step(
+            &crate::suite::LAUNCHER,
+            &system_program("cmd.exe"),
+            running,
+            &exe,
+            &Finish::Msi(msi.clone()),
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap_err();
         assert!(error.contains("still running"), "{error}");
         assert!(started.elapsed() < std::time::Duration::from_secs(30));
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "0.1.0");
@@ -905,9 +914,9 @@ mod tests {
         let cmd = system_program("cmd.exe");
         // `cargo test` binaries are unsigned.
         let unsigned = std::env::current_exe().unwrap();
-        assert_eq!(signed_like(&cmd, &cmd), Ok(()));
-        assert!(signed_like(&cmd, &unsigned).is_err_and(|e| e.contains("isn't signed")));
-        assert!(signed_like(&unsigned, &cmd).is_err_and(|e| e.contains("doesn't install updates")));
+        assert_eq!(signed_like(&crate::suite::LAUNCHER, &cmd, &cmd), Ok(()));
+        assert!(signed_like(&crate::suite::LAUNCHER, &cmd, &unsigned).is_err_and(|e| e.contains("isn't signed")));
+        assert!(signed_like(&crate::suite::LAUNCHER, &unsigned, &cmd).is_err_and(|e| e.contains("doesn't install updates")));
     }
 
     /// An unsigned launcher says so before it quits for an update. `cargo test` binaries are
@@ -919,7 +928,7 @@ mod tests {
         let msi = dir.path().join("artcraft-launcher-0.2.0-windows-x64.msi");
         std::fs::write(&msi, "not a package").unwrap();
         for install in [Install::Msi(system_program("msiexec.exe")), Install::Portable(system_program("msiexec.exe"))] {
-            let error = windows_precheck(&install, &Paths::under(dir.path()), &msi).unwrap_err();
+            let error = windows_precheck(&crate::suite::LAUNCHER, &install, &Paths::under(dir.path()), &msi).unwrap_err();
             assert!(error.contains("isn't signed"), "{error}");
         }
     }
@@ -933,8 +942,15 @@ mod tests {
         std::fs::write(&exe, "0.1.0").unwrap();
         let msi = dir.path().join("artcraft-launcher-0.2.0-windows-x64.msi");
         std::fs::write(&msi, "not a package").unwrap();
-        let error =
-            run_step(&system_program("cmd.exe"), exited_pid(), &exe, &Finish::Msi(msi.clone()), std::time::Duration::from_secs(5)).unwrap_err();
+        let error = run_step(
+            &crate::suite::LAUNCHER,
+            &system_program("cmd.exe"),
+            exited_pid(),
+            &exe,
+            &Finish::Msi(msi.clone()),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap_err();
         assert!(error.contains("isn't signed"), "{error}");
         assert!(!msi.exists());
     }
@@ -962,7 +978,8 @@ mod tests {
         writer.finish().unwrap();
         let tmp = dir.path().join("cache").join(PORTABLE_STAGING);
         let step = Finish::Portable { zip: zip.clone(), tmp: tmp.clone() };
-        let error = run_step(&system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5)).unwrap_err();
+        let error =
+            run_step(&crate::suite::LAUNCHER, &system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5)).unwrap_err();
         assert!(error.contains("isn't signed"), "{error}");
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "0.1.0");
         assert!(!folder.join("README.md").exists() && !folder.join("notes.txt").exists(), "nothing is copied");
@@ -993,7 +1010,8 @@ mod tests {
             writer.finish().unwrap();
             let tmp = dir.path().join(PORTABLE_STAGING);
             let step = Finish::Portable { zip: zip.clone(), tmp: tmp.clone() };
-            let error = run_step(&system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5)).unwrap_err();
+            let error = run_step(&crate::suite::LAUNCHER, &system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5))
+                .unwrap_err();
             assert!(error.contains(if launcher.is_some() { "isn't signed" } else { "doesn't contain" }), "{error}");
             assert_eq!(std::fs::read(&exe).unwrap(), b"old launcher");
             assert_eq!(std::fs::read(&settings).unwrap(), b"settings");
@@ -1028,7 +1046,8 @@ mod tests {
         writer.finish().unwrap();
         let tmp = dir.path().join("cache").join(PORTABLE_STAGING);
         let step = Finish::Portable { zip: zip.clone(), tmp: tmp.clone() };
-        let error = run_step(&system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5)).unwrap_err();
+        let error =
+            run_step(&crate::suite::LAUNCHER, &system_program("cmd.exe"), exited_pid(), &exe, &step, std::time::Duration::from_secs(5)).unwrap_err();
         assert!(error.contains("NOTICE"), "{error}");
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "0.1.0", "the previous exe is put back");
         assert!(!folder.join("README.md").exists(), "a file the update added is removed");

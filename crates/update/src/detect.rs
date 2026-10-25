@@ -230,8 +230,8 @@ pub mod windows {
         }
         out.sort_by(|a, b| match (&b.version, &a.version) {
             (Some(x), Some(y)) => version::compare(x, y),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, Some(_)) => std::cmp::Ordering::Less,
             (None, None) => std::cmp::Ordering::Equal,
         });
         out

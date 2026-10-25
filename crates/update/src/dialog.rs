@@ -117,7 +117,7 @@ impl StartupPrompt {
                 });
             });
 
-        if !window_open {
+        if !window_open || response == StartupPromptResponse::Later {
             self.open = false;
             response = StartupPromptResponse::Later;
         }

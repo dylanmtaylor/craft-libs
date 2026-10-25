@@ -229,8 +229,8 @@ impl Http {
         }
     }
 
-    /// Downloads `url` to `dest`, checking it against `sha256` when a checksum is published (and
-    /// always against `size`, when known).
+    /// Downloads `url` to `dest`, checking it against the supplied SHA-256 checksum (and always
+    /// against `size`, when known). The caller must provide a published checksum.
     ///
     /// Tolerant by design: an interrupted or stalled transfer resumes where it stopped (HTTP range
     /// requests) with backoff; a paused download, or one left by an earlier run, continues from
@@ -238,6 +238,9 @@ impl Http {
     /// giving up. When the connection stays down, the download ends paused (`PAUSED`), never
     /// losing what it has. `stop` pauses or cancels it between reads.
     pub fn download(&self, url: &str, dest: &Path, size: u64, sha256: &str, stop: &Stop, progress: &mut dyn FnMut(Transfer)) -> Result<(), String> {
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("the release publishes no valid checksum for this file, so it wasn't downloaded".into());
+        }
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
         }

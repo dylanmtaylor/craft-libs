@@ -45,7 +45,7 @@ pub use dialog::{StartupPrompt, StartupPromptResponse};
 
 /// Checks for an update against GitHub releases for the given app.
 pub fn check_for_update(app: &App, http: &Http, current_version: &str) -> Result<Option<Release>, String> {
-    let url = format!("https://api.github.com/repos/{}/releases?per_page=5", app.repo);
+    let url = format!("https://api.github.com/repos/{}/releases?per_page=30", app.repo);
     match http.get_api(&url, None)? {
         crate::http::Fetched::Body { text, .. } => {
             let latest = crate::release::parse_github_release_list(&text, app.repo, false)?;
@@ -58,7 +58,8 @@ pub fn check_for_update(app: &App, http: &Http, current_version: &str) -> Result
             }
             Ok(None)
         }
-        _ => Ok(None),
+        crate::http::Fetched::RateLimited { .. } => Err("GitHub's request limit was reached".into()),
+        crate::http::Fetched::NotModified | crate::http::Fetched::NotFound => Ok(None),
     }
 }
 
