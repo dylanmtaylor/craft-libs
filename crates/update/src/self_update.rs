@@ -518,6 +518,12 @@ pub fn finish(app: &App, args: &[OsString]) -> Option<Result<(), String>> {
     Some(done.and(started))
 }
 
+/// Finishes an update on non-Windows platforms (no-op helper).
+#[cfg(not(windows))]
+pub fn finish(_app: &App, _args: &[OsString]) -> Option<Result<(), String>> {
+    None
+}
+
 /// Where a failed update's error waits for the next start.
 fn failure_file(paths: &Paths) -> PathBuf {
     paths.logs().join("self-update-error.txt")
