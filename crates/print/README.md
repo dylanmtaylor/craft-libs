@@ -22,12 +22,17 @@ opens Windows printer preferences and submits jobs with copies, collation, duple
     `lpstat` is logged.
   - `--system-talk-name=org.freedesktop.Avahi`: driverless network printers (`lpstat -e`).
     Without it the list keeps the spooler's queues and loses only those.
-  - `lp`: submitting jobs. `lpoptions`: a printer's driver options (`printer_options`, empty
-    without it).
-  - `--filesystem=~/.cups:ro`: the user's default printer and saved options (`lpoptions`), and a
-    print server named in their `client.conf` (reached over the network). A server named only
-    in the system's `/etc/cups/client.conf` is out of reach: Flatpak's CUPS socket forwards only
-    a local socket.
+  - `lp`: submitting jobs.
+  - Driver options (`printer_options`) come from the queue's PPD in `/etc/cups/ppd`; `lpoptions`
+    only marks which choices are current. Flatpak reserves `/etc`, so the host's PPDs, and with
+    them these options, are out of reach in a Flatpak whether or not `lpoptions` is there.
+  - `--filesystem=~/.cups:ro`: the user's default printer and saved options, and a server named
+    in their `client.conf`. A network server also needs `--share=network`. A server named only
+    in the host's `/etc/cups/client.conf` is invisible in the sandbox, as is all of `/etc`;
+    `flatpak override --env=CUPS_SERVER=host:port` names it.
+  - A socket path in `client.conf` or `CUPS_SERVER`: Flatpak mounts the host's socket at
+    `/var/run/cups/cups.sock` whatever it is called, so the manifests' wrapper around the tools
+    points a socket path the sandbox lacks there, and leaves server names alone.
 - **Windows:** in this process, with no PowerShell, script or other program started, so
   printing works where App Control for Business or AppLocker enforce script rules. Printers
   come from `EnumPrinters` (local queues and `\\server\queue` connections) and the default from
