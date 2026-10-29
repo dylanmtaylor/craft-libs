@@ -29,10 +29,11 @@ opens Windows printer preferences and submits jobs with copies, collation, duple
   - `--filesystem=~/.cups:ro`: the user's default printer and saved options, and a server named
     in their `client.conf`. A network server also needs `--share=network`. A server named only
     in the host's `/etc/cups/client.conf` is invisible in the sandbox, as is all of `/etc`;
-    `flatpak override --env=CUPS_SERVER=host:port` names it.
-  - A socket path in `client.conf` or `CUPS_SERVER`: Flatpak mounts the host's socket at
-    `/var/run/cups/cups.sock` whatever it is called, so the manifests' wrapper around the tools
-    points a socket path the sandbox lacks there, and leaves server names alone.
+    `flatpak override --user --env=CUPS_SERVER=host:port <app-id>` names it for that one app.
+  - A socket path in `client.conf`: Flatpak mounts the socket it chooses at
+    `/var/run/cups/cups.sock`, so the manifests' wrapper around the tools points CUPS there when
+    CUPS' socket is the one Flatpak chose, and fails when it isn't rather than reach another
+    server. Server names and `CUPS_SERVER` are left alone.
 - **Windows:** in this process, with no PowerShell, script or other program started, so
   printing works where App Control for Business or AppLocker enforce script rules. Printers
   come from `EnumPrinters` (local queues and `\\server\queue` connections) and the default from
