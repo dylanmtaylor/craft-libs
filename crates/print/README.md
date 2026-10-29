@@ -15,6 +15,11 @@ opens Windows printer preferences and submits jobs with copies, collation, duple
 
 - **macOS/Linux:** CUPS `lpstat`, `lpoptions` and `lp`. Jobs stream through stdin. Exact-size
   sheets use `fit-to-page=false`; shrink-to-fit uses IPP `print-scaling=auto-fit`.
+- **Flatpak:** the Freedesktop runtime has libcups but not `lpstat`/`lp`/`lpoptions`, so the app
+  must bundle them (the apps' manifests build them from CUPS as a `cups-client` module), and it
+  needs `--socket=cups` for the spooler plus `--system-talk-name=org.freedesktop.Avahi`, without
+  which `lpstat -e` can't find driverless network printers. Missing any of these leaves the
+  printer list empty; a missing `lpstat` is logged.
 - **Windows:** in this process, with no PowerShell, script or other program started, so
   printing works where App Control for Business or AppLocker enforce script rules. Printers
   come from `EnumPrinters` (local queues and `\\server\queue` connections) and the default from
