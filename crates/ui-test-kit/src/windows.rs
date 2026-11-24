@@ -5,7 +5,7 @@
 use craft_host::target::ShellInfo;
 use craft_ui::runtime::InstallSpec;
 use craft_ui::runtime::env::RootEnv;
-use craft_ui::runtime::frame::{FrameInput, set_input};
+use craft_ui::runtime::frame::{FrameInput, WindowInput, set_input};
 use craft_ui::testing::Frames;
 use craft_ui::testing::access::{AccessTree, tree_of};
 use craft_ui::testing::windows::FakeSystem;
@@ -265,6 +265,7 @@ pub struct Windows {
     pub ctx: Context,
     root_info: RefCell<ViewportInfo>,
     root: RefCell<RootEnv>,
+    window_input: Cell<WindowInput>,
 }
 
 impl Default for Windows {
@@ -293,7 +294,12 @@ impl Windows {
         COMMANDS.with(|kept| kept.borrow_mut().clear());
         BUILDERS.with(|kept| kept.borrow_mut().clear());
         NOW.with(|now| now.set(0.0));
-        Windows { ctx, root_info: RefCell::new(ViewportInfo::default()), root: RefCell::new(RootEnv::default()) }
+        Windows {
+            ctx,
+            root_info: RefCell::new(ViewportInfo::default()),
+            root: RefCell::new(RootEnv::default()),
+            window_input: Cell::new(WindowInput::Live),
+        }
     }
 
     /// The window facts child passes report from now on.
@@ -305,6 +311,11 @@ impl Windows {
     /// [`child_info`](Self::child_info) gave.
     pub fn facts(&self, viewport: ViewportId) -> ViewportInfo {
         with_facts(viewport, |info| info.clone())
+    }
+
+    /// The window-input policy every following frame's input gives, as a host's `FrameInput::window_input` does.
+    pub fn window_input(&self, policy: WindowInput) {
+        self.window_input.set(policy);
     }
 
     /// The window facts the root viewport reports from now on.
@@ -343,7 +354,7 @@ impl Windows {
             root_dropped.into_iter().map(|name| Arc::new(DroppedPath(name.into())) as egui::DroppedFileHandle).collect();
         CHILD_FILES.with(|files| *files.borrow_mut() = child_files);
         TREES.with(|kept| kept.borrow_mut().clear());
-        set_input(&self.ctx, FrameInput::new(self.root.borrow().clone()));
+        set_input(&self.ctx, FrameInput::new(self.root.borrow().clone()).window_input(self.window_input.get()));
         let mut input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, ROOT_SIZE)),
             events: root,
