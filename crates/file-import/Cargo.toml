@@ -13,7 +13,7 @@ craft-raster-codecs = { workspace = true }
 craft-svg = { workspace = true }
 craft-dxf = { workspace = true }
 craft-embroidery = { workspace = true }
-craft-pdf = { workspace = true, features = ["paths", "write"] }
+craft-pdf = { workspace = true, features = ["paths", "write", "raster"] }
 craft-eps = { workspace = true, features = ["paths"] }
 kurbo = { workspace = true }
 thiserror = { workspace = true }
